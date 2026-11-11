@@ -12,7 +12,7 @@ if not defined VS (echo Visual Studio with C++ tools not found & exit /b 1)
 call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 if not exist "%OUT%" mkdir "%OUT%"
 cl /nologo /std:c++17 /O2 /EHsc /W4 /MT /DUNICODE /D_UNICODE /I"%SDL%\include" "%HERE%main.cpp" ^
-   /Fo"%OUT%\\" /Fe"%OUT%\ZStudioFFBHost.exe" /link /LIBPATH:"%SDL%\lib\x64" SDL3.lib || exit /b 1
+   /Fo"%OUT%\\" /Fe"%OUT%\ZStudioFFBHost.exe" /link /LIBPATH:"%SDL%\lib\x64" SDL3.lib advapi32.lib || exit /b 1
 copy /y "%SDL%\lib\x64\SDL3.dll" "%OUT%\" >nul
 if not exist "%OUT%\ZStudioFFB.ini" copy /y "%HERE%ZStudioFFB.ini" "%OUT%\" >nul
 echo Built %OUT%\ZStudioFFBHost.exe

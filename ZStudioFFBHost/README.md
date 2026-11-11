@@ -18,7 +18,8 @@ ZStudioFFBHost.exe --selftest    parser and mapping checks without a device (exi
   --ini <file>  --stream <file>  overrides
 ```
 
-Start it before or after the game. It waits for the stream file to appear and checks again every 2 s.
+Start it before or after the game. Every 2 s it attaches to the **most recently written** candidate stream. A PC with
+the Steam game and a dev checkout has two streams, and the host follows whichever one a match is writing.
 
 ## How an event becomes a force
 
@@ -59,7 +60,11 @@ The game truncates its stream when a match starts and appends one line per event
 The handle is opened share-read/write/delete, so the game can always truncate and write.
 
 DEFY's stream:
-- in the packaged game: `%LOCALAPPDATA%\DefyEngine\Saved\Defy\feedback.ndjson`;
+- in the Steam game: `<library>\steamapps\common\DEFY\artifacts\feeds\feedback.ndjson`, because the depot ships
+  `data\` and the game writes beside it. The INI line `SteamGame1=DEFY|artifacts\feeds\feedback.ndjson` is tried in every
+  Steam library. The host reads the Steam path from `HKCU\Software\Valve\Steam` and the libraries from
+  `steamapps\libraryfolders.vdf`, so a game on any drive is found;
+- only if the game finds no `data\` beside it: `Saved\Defy\feedback.ndjson`;
 - in a developer checkout: `<repo>\artifacts\feeds\feedback.ndjson`;
 - with `-DefyFeedbackStream=<path>`: that path.
 

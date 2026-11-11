@@ -118,6 +118,36 @@ static std::string ExpandEnv(const std::string& S)
 	return (N > 0 && N <= 2048) ? Narrow(Buf) : S;
 }
 
+// Every Steam library on this PC: <SteamPath> plus each "path" in steamapps/libraryfolders.vdf. A Steam game lives in
+// <library>/steamapps/common/<folder>, and a player's library can be on any drive.
+static std::vector<std::string> SteamLibraries()
+{
+	std::vector<std::string> Out;
+	wchar_t Buf[1024]; DWORD Sz = sizeof(Buf);
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, nullptr, Buf, &Sz) != ERROR_SUCCESS)
+		return Out;
+	std::string Steam = Narrow(Buf);
+	std::replace(Steam.begin(), Steam.end(), '/', '\\');
+	Out.push_back(Steam);
+	FILE* F = nullptr;
+	if (_wfopen_s(&F, Widen(Steam + "\\steamapps\\libraryfolders.vdf").c_str(), L"rb") != 0 || !F) return Out;
+	std::string Vdf;
+	char Chunk[4096];
+	for (size_t N; (N = fread(Chunk, 1, sizeof(Chunk), F)) > 0;) Vdf.append(Chunk, N);
+	fclose(F);
+	for (size_t P = 0; (P = Vdf.find("\"path\"", P)) != std::string::npos;)
+	{
+		const size_t A = Vdf.find('"', P + 6), B = A == std::string::npos ? A : Vdf.find('"', A + 1);
+		if (B == std::string::npos) break;
+		std::string Lib;
+		for (size_t i = A + 1; i < B; ++i) { if (Vdf[i] == '\\' && i + 1 < B && Vdf[i + 1] == '\\') ++i; Lib += Vdf[i]; }
+		if (std::none_of(Out.begin(), Out.end(), [&](const std::string& X) { return _stricmp(X.c_str(), Lib.c_str()) == 0; }))
+			Out.push_back(Lib);
+		P = B + 1;
+	}
+	return Out;
+}
+
 static FxType ParseType(const std::wstring& S, FxType Def)
 {
 	if (_wcsicmp(S.c_str(), L"jolt") == 0) return FxType::Jolt;
@@ -157,6 +187,19 @@ static void LoadConfig(Config& C)
 			swprintf_s(Key, L"Stream%d", i);
 			const std::wstring P = IniStr(C, L"Streams", Key, L"");
 			if (!P.empty()) C.Streams.push_back(ExpandEnv(Narrow(P)));
+		}
+		// SteamGame1=DEFY|artifacts\feeds\feedback.ndjson: <steamapps/common folder>|<path inside the install>,
+		// tried in every Steam library on this PC.
+		const std::vector<std::string> Libs = SteamLibraries();
+		for (int i = 1; i <= 16; ++i)
+		{
+			wchar_t Key[16];
+			swprintf_s(Key, L"SteamGame%d", i);
+			const std::string V = Narrow(IniStr(C, L"Streams", Key, L""));
+			const size_t Bar = V.find('|');
+			if (Bar == std::string::npos) continue;
+			for (const auto& L : Libs)
+				C.Streams.push_back(L + "\\steamapps\\common\\" + V.substr(0, Bar) + "\\" + V.substr(Bar + 1));
 		}
 	}
 
@@ -612,10 +655,22 @@ static int Run(const Config& C, bool bDry)
 		{
 			NextScan = Now + 2000;
 			if (!bDry && !D.IsOpen() && OpenDevice(D, C)) printf("Device: %s\n", D.Name.c_str());
-			// Prefer the first candidate that exists; the game may create it only when a match starts.
-			if (T.H == INVALID_HANDLE_VALUE)
-				for (const auto& S : C.Streams)
-					if (T.Open(S, /*bFromEnd*/ true)) { printf("Attached: %s\n", S.c_str()); break; }
+			// Follow the most recently WRITTEN candidate: a PC with both the Steam game and a dev checkout has two streams,
+			// and the one a match is writing is the newest. The game may create its file only when a match starts.
+			std::string Best;
+			ULONGLONG BestT = 0;
+			for (const auto& S : C.Streams)
+			{
+				WIN32_FILE_ATTRIBUTE_DATA A;
+				if (!GetFileAttributesExW(Widen(S).c_str(), GetFileExInfoStandard, &A)) continue;
+				const ULONGLONG W = (ULONGLONG(A.ftLastWriteTime.dwHighDateTime) << 32) | A.ftLastWriteTime.dwLowDateTime;
+				if (Best.empty() || W > BestT) { Best = S; BestT = W; }
+			}
+			if (!Best.empty() && (T.H == INVALID_HANDLE_VALUE || _stricmp(Best.c_str(), T.Path.c_str()) != 0))
+			{
+				// Attach at the end, as on first attach: what was written before is history.
+				if (T.Open(Best, /*bFromEnd*/ true)) printf("Attached: %s\n", Best.c_str());
+			}
 		}
 		T.Poll([&](const std::string& L)
 		{
