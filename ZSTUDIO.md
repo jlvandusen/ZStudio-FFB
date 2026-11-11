@@ -66,14 +66,17 @@ version.
 
 ## Roadmap
 
-1. **Host:** a standalone `ZStudioFFBHost.exe` around the existing SDL haptic code. It loads `Config/`, picks the
-   device, and has no dinput8 proxy.
-2. **ZStudio module:** tail the NDJSON. Map `rumble`/`shake`/`trauma` to rumble on pads and to a jolt or sine burst on
-   wheels and sticks. Per-id overrides in an INI (`[fb_shockwave_pass] Force=...`).
+1. **Host: BUILT 2026-11-10.** `ZStudioFFBHost/` is a standalone exe with no dinput8 proxy. It went straight to SDL3
+   rather than wrapping the SDL2 code in `DllMain.cpp`, which is welded to the proxy's globals. It keeps upstream's
+   tuning model: MinForce/MaxForce, PowerMode, Reverse, and the "1.5× to interrupt" rule.
+2. **ZStudio module: BUILT 2026-11-10, in the host.** It tails the NDJSON (attach at the end, restart on truncation)
+   and maps `rumble`/`shake`/`trauma` to a jolt, a sine or a rumble. Per-id rules live in `ZStudioFFB.ini` (Type,
+   Force, Gain, LengthMs, PeriodMs, prefix `*`). Verified by `--selftest` and a dry-run tail test, not yet on a
+   physical wheel. `ZStudioFFBHost/README.md`.
 3. **Protocol v2 (continuous)** for driving or flying games, then a small C header in `ZStudioProtocol/` that games
    implement themselves (the header is the spec, not GPL code; it is written fresh and licensed MIT so games can use
    it).
-4. **SDL3** (we use 3.4.20 in DEFY's own pad layer), once the module works on SDL2.
+4. **SDL3:** done for the host (3.4.20, `ThirdParty/SDL3`, zlib). The legacy dinput8 plugin stays on SDL2.
 5. **GUI:** keep FFBPluginGUI and add a "Z Studios games" page.
 
 ## Relationship to DEFY's built-in pad layer
