@@ -84,3 +84,20 @@ version.
 DEFY's `FDefyPadFX` (SDL3, in DEFY's own repo) drives gamepads: Xbox trigger motors, DualSense triggers and rumble.
 It is **separate code, not derived from this fork**. ZStudio-FFB is for what a game should not carry itself: wheels,
 FFB sticks, cockpit rigs. Both read the same feedback ids, so one tuning table drives both.
+
+## Nightmarch (2026-11-13)
+
+James: *"we will want to fork and take over for him and build all our games into this library for physical force
+feedback on the board etc"*. He chose, in Nightmarch's DEV01 session: a separate program (the licence boundary above),
+this fork on his account, and a video layer of every kind (Nightmarch's side, not this repo).
+
+- **The game publishes v1** from `Nightmarch/src/Nightmarch.RulesEngine/Play/Feedback.cs`, one home for force: a pulse
+  for every felt event, `fb_nm_<event type>`, derived from its sound cue. The playtest writes
+  `artifacts/feeds/feedback.ndjson`, and the Unity front-end will write the same file.
+- **`ZStudioFFB.ini`** finds the Steam install (`SteamGame2=Nightmarch|...`) and the dev checkouts, and tunes the
+  `fb_nm_*` ids: the door-engine and a march unmade roll, a banner falling kicks, the quiet beds are off.
+- **The board, next.** Nightmarch is a physical board with ESP32 props (`Nightmarch/firmware/`,
+  `docs/HARDWARE_BRIDGE.md`). The plan is a **board output** in this host: the same mapped force, sent to the props'
+  actuators (vibration motors or solenoids under the wedges) over the bridge's serial or BLE, alongside SDL devices.
+  It needs a firmware message for "pulse this wedge" and a decision on the actuators (s1 / hardware lane).
+
