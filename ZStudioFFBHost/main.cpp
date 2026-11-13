@@ -21,7 +21,13 @@ along with ZStudio-FFB.If not, see < https://www.gnu.org/licenses/>.
 //   ZStudioFFBHost.exe --list          list haptic devices and gamepads, with what each can do
 //   ZStudioFFBHost.exe --test          play a left jolt, a right jolt, a sine roll and a rumble on the device
 //   ZStudioFFBHost.exe --dry-run       tail and print what each event WOULD play, without opening a device
-//   ZStudioFFBHost.exe --selftest      parser + mapping checks, no device, no file; exit 1 on a failure
+//   ZStudioFFBHost.exe --selftest      parser + mapping + board-frame checks, no device, no file; exit 1 on a failure
+//   ZStudioFFBHost.exe --board-test    light and shake every prop on the board ([Board] Port=): ember, cyan, a fade, gears
+//   --board <COMn>                     the board's bridge ESP32 on this port (overrides [Board] Port=)
+//
+// The BOARD output (board.h): a physical game board's ESP32 props (WS2812 lights, PWM motor drivers) behind a bridge
+// ESP32 on USB serial. A game line that carries board fields lights and shakes them; [Board] ForceToMotor=1 also sends
+// any game's wheel force to the props' motors. It runs alongside the SDL device, or alone when there is none.
 //   --ini <path>  --stream <path>      override the INI and the stream path
 //
 // Tuning follows upstream FFB Arcade Plugin: MinForce / MaxForce in percent, PowerMode (a square-root curve that lifts
@@ -208,7 +214,7 @@ static void LoadConfig(Config& C)
 	const DWORD N = GetPrivateProfileSectionNamesW(Names.data(), (DWORD)Names.size(), C.IniPath.c_str());
 	for (const wchar_t* P = Names.data(); P < Names.data() + N && *P; P += wcslen(P) + 1)
 	{
-		if (!_wcsicmp(P, L"Settings") || !_wcsicmp(P, L"Mapping") || !_wcsicmp(P, L"Streams")) continue;
+		if (!_wcsicmp(P, L"Settings") || !_wcsicmp(P, L"Mapping") || !_wcsicmp(P, L"Streams") || !_wcsicmp(P, L"Board")) continue;
 		IdRule R;
 		const std::wstring F = IniStr(C, P, L"Force", L"");
 		if (!F.empty()) { R.bHasForce = true; R.Force = std::clamp(_wtof(F.c_str()) / 100.0, 0.0, 1.0); }
@@ -333,6 +339,31 @@ static Plan MapEvent(const Config& C, const Event& E, unsigned& DirSeed)
 static const char* TypeName(FxType T)
 {
 	return T == FxType::Jolt ? "jolt" : T == FxType::Sine ? "sine" : T == FxType::Rumble ? "rumble" : "off";
+}
+
+// -------------------------------------------------------------------------------------------------------------- board
+
+#include "board.h"
+
+static void LoadBoard(const Config& C, Board::Settings& B)
+{
+	const wchar_t* S = L"Board";
+	if (B.Port.empty()) B.Port = Narrow(IniStr(C, S, L"Port", L""));
+	B.Baud = IniI(C, S, L"Baud", B.Baud);
+	B.Brightness = std::clamp(IniI(C, S, L"Brightness", B.Brightness), 0, 100);
+	B.MotorScale = std::clamp(IniI(C, S, L"MotorScale", B.MotorScale), 0, 100);
+	B.MaxMotorMs = std::clamp(IniI(C, S, L"MaxMotorMs", B.MaxMotorMs), 0, Board::MotorMaxOnMs);
+	B.bForceToMotor = IniI(C, S, L"ForceToMotor", 0) != 0;
+	B.bLights = IniI(C, S, L"Lights", 1) != 0;
+	B.bMotors = IniI(C, S, L"Motors", 1) != 0;
+}
+
+// The board cue for one line: the game's own board fields, else (ForceToMotor) the wheel's plan on every motor.
+static bool BoardCueFor(const Board::Settings& B, const std::string& L, const Plan& P, Board::Cue& Out)
+{
+	Out = Board::Cue();
+	if (Board::CueFromLine(L, Out)) return true;
+	return B.bForceToMotor && Board::CueFromPlan(P, Out);
 }
 
 // ------------------------------------------------------------------------------------------------------------- device
@@ -586,6 +617,36 @@ static int SelfTest()
 	Event Rm; Rm.Id = "fb_unit_ready"; Rm.Rumble = 0.3;
 	Check(MapEvent(Config(), Rm, Seed).Type == FxType::Rumble, "rumble without shake stays a rumble");
 
+	// The board (board.h): Nightmarch's wire protocol v1, checked against its fixtures (firmware/protocol/fixtures.json).
+	const unsigned char Nine[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+	Check(Board::Crc16(Nine, 9) == 0x29B1, "CRC-16/CCITT-FALSE check value");
+	Check(Board::HexOf(Board::Encode(Board::MsgLed, 8, { 0x01, 0x00, 0x03, 0xc8, 0x14, 0x0a, 0x58, 0x02, 0x05 }))
+	      == "a55a01070809010003c8140a5802052846", "LED frame matches the protocol fixture led_pulse_once");
+	Board::Cue K;
+	const std::string L2 = "{\"id\":\"fb_nm_fallen\",\"rumble\":0.9,\"terr\":7,\"fx\":4,\"rgb\":\"C81414\",\"lightMs\":1500,"
+	                       "\"pri\":3,\"motor\":230,\"motorMs\":450,\"shape\":2,\"periodMs\":300,\"v\":1}";
+	Check(Board::CueFromLine(L2, K) && K.Territory == 7 && K.Effect == 4 && K.Rgb == 0xC81414 && K.Motor == 230,
+	      "board fields on a v1 line");
+	Check(Board::MotorSteps(K) == std::vector<int>{ 230, 201, 173, 144, 115, 86, 58, 0, 0, 0 },
+	      "a fade is Nightmarch Board.cs's fade (BoardTests)");
+	Board::Cue H; H.Motor = 220; H.MotorMs = 2400; H.MotorShape = Board::Shape::Heartbeat; H.PeriodMs = 600;
+	auto HS = Board::MotorSteps(H);
+	Check(std::vector<int>(HS.begin(), HS.begin() + 14) == std::vector<int>{ 220, 220, 0, 154, 154, 0, 0, 0, 0, 0, 0, 0, 220, 220 },
+	      "a heartbeat is Nightmarch Board.cs's heartbeat");
+	Board::Settings Bs;
+	unsigned char Sq = 0;
+	auto Fr = Board::Frames(Bs, K, Sq);
+	Check(Fr.size() == 9 && Fr.front().Bytes[3] == Board::MsgLed && Fr.back().Bytes[8] == 0 && Fr.back().DueMs == 350,
+	      "a cue is one LED frame then RUMBLE frames, ending stopped");
+	Board::Cue Long; Long.Motor = 255; Long.MotorMs = 60000; Long.MotorShape = Board::Shape::Steady;
+	Check(Board::MotorSteps(Long).size() == Board::MotorMaxOnMs / Board::StepMs + 1, "no motor runs past the firmware ceiling");
+	Board::Cue None;
+	Check(!Board::CueFromLine(L1, None), "a line without board fields has no board cue");
+	Plan Jp; Jp.Type = FxType::Jolt; Jp.Strength = 0.5; Jp.LengthMs = 200;
+	Board::Settings Fm; Fm.bForceToMotor = true;
+	Check(BoardCueFor(Fm, L1, Jp, None) && None.MotorShape == Board::Shape::Fade && None.Territory == 0 && !None.bHasLight,
+	      "ForceToMotor: another game's jolt is a fade on every prop");
+
 	printf("%s (%d failed)\n", Fail ? "SELFTEST FAILED" : "SELFTEST PASS", Fail);
 	return Fail ? 1 : 0;
 }
@@ -636,8 +697,38 @@ static int Test(const Config& C)
 	return 0;
 }
 
-static int Run(const Config& C, bool bDry)
+static int BoardTest(const Board::Settings& B)
 {
+	Board::Link Lk;
+	if (!Lk.Open(B)) { printf("No board: set [Board] Port=COMn in the INI or pass --board COMn (could not open '%s').\n", B.Port.c_str()); return 1; }
+	printf("Board: %s at %d baud.\n", B.Port.c_str(), B.Baud);
+	struct Step { const char* What; Board::Cue C; int WaitMs; };
+	auto Mk = [](int Fx, unsigned Rgb, int LightMs, int Motor, int MotorMs, Board::Shape Sh, int Period)
+	{
+		Board::Cue C; C.bHasLight = true; C.Effect = Fx; C.Rgb = Rgb; C.LightMs = LightMs; C.Priority = 4;
+		C.Motor = Motor; C.MotorMs = MotorMs; C.MotorShape = Sh; C.PeriodMs = Period; return C;
+	};
+	const Step Steps[] = {
+		{ "ember sweep, no motor", Mk(5, 0xF0A340, 1500, 0, 0, Board::Shape::None, 300), 1800 },
+		{ "cyan strobe, gears", Mk(4, 0x5AD6C6, 1500, 255, 1500, Board::Shape::Pulse, 240), 1800 },
+		{ "red pulse, a fade", Mk(3, 0xC81414, 900, 230, 450, Board::Shape::Fade, 300), 1200 },
+		{ "gold breathe, a swell", Mk(2, 0xFFD23C, 1500, 200, 1200, Board::Shape::Swell, 300), 1600 },
+		{ "moonlight, a heartbeat", Mk(6, 0x283A6E, 0, 220, 2400, Board::Shape::Heartbeat, 600), 2800 },
+	};
+	for (const auto& S : Steps)
+	{
+		printf("  %s\n", S.What);
+		const Uint64 T0 = SDL_GetTicks();
+		Lk.Play(B, S.C, T0);
+		while (SDL_GetTicks() < T0 + (Uint64)S.WaitMs && Lk.IsOpen()) { Lk.Service(SDL_GetTicks()); SDL_Delay(5); }
+	}
+	Lk.Close();
+	return 0;
+}
+
+static int Run(const Config& C, const Board::Settings& B, bool bDry)
+{
+	Board::Link Lk;
 	Device D;
 	Tailer T;
 	unsigned Seed = (unsigned)GetTickCount();
@@ -655,6 +746,7 @@ static int Run(const Config& C, bool bDry)
 		{
 			NextScan = Now + 2000;
 			if (!bDry && !D.IsOpen() && OpenDevice(D, C)) printf("Device: %s\n", D.Name.c_str());
+			if (!bDry && !B.Port.empty() && !Lk.IsOpen() && Lk.Open(B)) printf("Board: %s at %d baud.\n", B.Port.c_str(), B.Baud);
 			// Follow the most recently WRITTEN candidate: a PC with both the Steam game and a dev checkout has two streams,
 			// and the one a match is writing is the newest. The game may create its file only when a match starts.
 			std::string Best;
@@ -683,11 +775,26 @@ static int Run(const Config& C, bool bDry)
 				printf("%9.3f %-24s %-6s %.2f %4d ms%s\n", E.T, E.Id.c_str(), TypeName(P.Type), P.Strength, P.LengthMs,
 				       P.Type == FxType::Jolt ? (P.Direction < 0 ? " <" : " >") : "");
 			if (!bDry) Play(D, P);
+			Board::Cue K;
+			if (BoardCueFor(B, L, P, K))
+			{
+				if (bDry)
+				{
+					unsigned char Sq = 0;
+					const auto Fr = Board::Frames(B, K, Sq);
+					printf("          board: prop %d fx %d #%06X %d ms, motor %d %d ms shape %d -> %zu frames, first %s\n",
+					       K.Territory, K.Effect, K.Rgb, K.LightMs, K.Motor, K.MotorMs, (int)K.MotorShape, Fr.size(),
+					       Fr.empty() ? "-" : Board::HexOf(Fr.front().Bytes).c_str());
+				}
+				else if (Lk.IsOpen()) Lk.Play(B, K, SDL_GetTicks());
+			}
 		});
+		Lk.Service(SDL_GetTicks());
 		SDL_Delay((Uint32)C.PollMs);
 	}
 	T.Close();
 	D.Close();
+	Lk.Close();
 	printf("Stopped after %zu events.\n", Events);
 	return 0;
 }
@@ -704,6 +811,7 @@ int main(int argc, char** argv)
 	C.IniPath = Dir + L"ZStudioFFB.ini";
 
 	std::string Mode = "run";
+	Board::Settings BoardSt;
 	for (int i = 1; i < argc; ++i)
 	{
 		const std::string A = argv[i];
@@ -713,11 +821,14 @@ int main(int argc, char** argv)
 		else if (A == "--test") Mode = "test";
 		else if (A == "--dry-run") Mode = "dry";
 		else if (A == "--selftest") Mode = "selftest";
+		else if (A == "--board-test") Mode = "boardtest";
+		else if (A == "--board" && i + 1 < argc) BoardSt.Port = argv[++i];
 		else { printf("Unknown argument: %s\nSee the header of ZStudioFFBHost/main.cpp or README.md.\n", A.c_str()); return 2; }
 	}
 	if (Mode == "selftest") return SelfTest();
 
 	LoadConfig(C);
+	LoadBoard(C, BoardSt);
 	if (!SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_GAMEPAD))
 	{
 		printf("SDL_Init failed: %s\n", SDL_GetError());
@@ -727,7 +838,8 @@ int main(int argc, char** argv)
 	int Rc = 0;
 	if (Mode == "list") Rc = List();
 	else if (Mode == "test") Rc = Test(C);
-	else Rc = Run(C, Mode == "dry");
+	else if (Mode == "boardtest") Rc = BoardTest(BoardSt);
+	else Rc = Run(C, BoardSt, Mode == "dry");
 	SDL_Quit();
 	return Rc;
 }

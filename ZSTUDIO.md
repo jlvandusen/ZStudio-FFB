@@ -96,8 +96,23 @@ this fork on his account, and a video layer of every kind (Nightmarch's side, no
   `artifacts/feeds/feedback.ndjson`, and the Unity front-end will write the same file.
 - **`ZStudioFFB.ini`** finds the Steam install (`SteamGame2=Nightmarch|...`) and the dev checkouts, and tunes the
   `fb_nm_*` ids: the door-engine and a march unmade roll, a banner falling kicks, the quiet beds are off.
-- **The board, next.** Nightmarch is a physical board with ESP32 props (`Nightmarch/firmware/`,
-  `docs/HARDWARE_BRIDGE.md`). The plan is a **board output** in this host: the same mapped force, sent to the props'
-  actuators (vibration motors or solenoids under the wedges) over the bridge's serial or BLE, alongside SDL devices.
-  It needs a firmware message for "pulse this wedge" and a decision on the actuators (s1 / hardware lane).
+- **The board output (built 2026-11-13, `ZStudioFFBHost/board.h`).** James: *"support our adaption of the ESP32 and
+  motor drivers for rumble and for led rgb lighting effects"*. The host now also drives Nightmarch's physical board: a
+  bridge ESP32 on USB serial (`[Board] Port=COMn`, 921600 baud) fans frames out over ESP-NOW to the props, each with
+  WS2812/SK6812 lights (RMT) and a vibration motor on a PWM motor driver (20 kHz, `Nightmarch/firmware/src/node/`).
+  - **Wire:** Nightmarch hardware protocol v1 (`Nightmarch/firmware/protocol/protocol.toml`), LED 0x07 and RUMBLE 0x08,
+    plus HELLO when the port opens; it prints the bridge's HELLO_ACK, SAFE mode and log lines. **No firmware change:** a
+    node's motor takes the newest RUMBLE frame, so a motor shape is a train of 50 ms frames (each lasting 150 ms, the
+    last one 0), and the node still clamps every rumble to 2.5 s.
+  - **Cues:** Nightmarch's `Board.cs` is the one home: per event, the prop (a territory wire code from
+    `territories.csv`, 0 = every prop), a light (a firmware effect and a palette colour: ember for the mythic, cyan for
+    the Tower, red for loss, moonlight for the night) and a motor (strength, length, shape: steady, fade, swell, pulse,
+    heartbeat). They ride on the v1 line as flat extra fields (`terr fx rgb lightMs pri motor motorMs shape periodMs`),
+    which any older v1 reader ignores. The shapes match `Board.cs` exactly (the same vectors in `--selftest` and in
+    Nightmarch's `BoardTests`).
+  - **Any game:** `[Board] ForceToMotor=1` plays the wheel force of a game with no board fields on every prop's motor.
+  - **Try it:** `--board-test` (ember, cyan gears, a red fade, a gold swell, a heartbeat on every prop); `--dry-run`
+    prints each cue and its first frame in hex; `--board COM5` overrides the INI.
+  - **Next (hardware lane):** a per-prop ADDRESS for the Tower, which moves (it is reached as every-prop today), and
+    the motor driver's real stall floor (40/255 is assumed) measured on the printed props.
 
